@@ -37,4 +37,21 @@ class FormulaEvaluatorTest {
         val bit0 = FormulaEvaluator.evaluate("{A:1}", bytes)
         assertEquals(1.0, bit0!!, 0.001)
     }
+
+    @Test
+    fun `extracts voltage from ELM327 ATRV response`() {
+        val bytes = FormulaEvaluator.extractPayloadBytes("14.2V", "ATRV")
+        assertNotNull(bytes)
+        val v = FormulaEvaluator.evaluate("((A*256)+B)/1000", bytes!!)
+        assertEquals(14.2, v!!, 0.01)
+    }
+
+    @Test
+    fun `evaluates K9K EDC17C42 AC Refrigerant Pressure 22222A`() {
+        // 62 22 2A 00 7E -> 126 * 0.1 = 12.6 bar
+        val bytes = FormulaEvaluator.extractPayloadBytes("62222A007E", "22222A")
+        assertNotNull(bytes)
+        val bar = FormulaEvaluator.evaluate("((A*256)+B)*0.1", bytes!!)
+        assertEquals(12.6, bar!!, 0.01)
+    }
 }

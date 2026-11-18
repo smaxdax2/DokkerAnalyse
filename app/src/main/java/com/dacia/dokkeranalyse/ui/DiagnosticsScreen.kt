@@ -1,5 +1,9 @@
 package com.dacia.dokkeranalyse.ui
 
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
+import android.widget.Toast
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -16,8 +20,10 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.DeleteSweep
 import androidx.compose.material.icons.filled.Radar
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Send
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -27,6 +33,7 @@ import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -38,6 +45,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -54,18 +62,21 @@ fun DiagnosticsScreen(
     isProbing: Boolean,
     terminalLogs: List<TerminalLogEntry>,
     onRunEvaporatorProbe: () -> Unit,
+    onRunDeepDidScan: () -> Unit,
+    onBuildReportText: () -> String,
     onUseProbeCandidate: (ProbeCandidateResult) -> Unit,
     onSendRawCommand: (String) -> Unit,
     onClearLogs: () -> Unit
 ) {
     var rawCmdInput by remember { mutableStateOf("") }
+    val context = LocalContext.current
 
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(16.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
-        // 1. Auto-Scanner for Dacia Dokker Evaporator Sensor ECUs
+        // 1. Auto-Scanner for Dacia Dokker 8212/ABO Evaporator Sensor ECUs
         item {
             Card(
                 shape = RoundedCornerShape(16.dp),
@@ -79,12 +90,12 @@ fun DiagnosticsScreen(
                     ) {
                         Column(modifier = Modifier.weight(1f)) {
                             Text(
-                                text = "Evaporator ECU Auto-Scanner",
+                                text = "Dokker 8212/ABO (K9K 612) ECU Scanner",
                                 style = MaterialTheme.typography.titleMedium,
                                 fontWeight = FontWeight.Bold
                             )
                             Text(
-                                text = "Probes Climate (744), Engine K9K (7E0/7E2), and UCH (745) to see which ECU hosts the evaporator thermistor on your 2014 Dokker.",
+                                text = "Your Dokker 1.5 dCi 75 PS uses Bosch EDC17C42 (7E0/7E8) & UCH T4_VS_BCM (745/765) with UDS session 1003. Scan candidate DIDs or run Deep Scan to discover all live UDS parameters.",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -104,11 +115,41 @@ fun DiagnosticsScreen(
                                 strokeWidth = 2.dp
                             )
                             Spacer(Modifier.width(8.dp))
-                            Text("Probing Dokker ECUs...")
+                            Text("Scanning Dokker ECUs...")
                         } else {
                             Icon(Icons.Default.Radar, contentDescription = null)
                             Spacer(Modifier.width(8.dp))
-                            Text("Scan All Candidate Evaporator PIDs")
+                            Text("1. Scan Candidate Evaporator PIDs")
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        FilledTonalButton(
+                            onClick = onRunDeepDidScan,
+                            enabled = !isProbing,
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Icon(Icons.Default.Search, contentDescription = null)
+                            Spacer(Modifier.width(6.dp))
+                            Text("2. Deep Scan 745 & 7E0")
+                        }
+
+                        OutlinedButton(
+                            onClick = {
+                                val report = onBuildReportText()
+                                val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+                                clipboard?.setPrimaryClip(ClipData.newPlainText("Dokker OBD2 Report", report))
+                                Toast.makeText(context, "Copied scan report to clipboard!", Toast.LENGTH_SHORT).show()
+                            }
+                        ) {
+                            Icon(Icons.Default.ContentCopy, contentDescription = null)
+                            Spacer(Modifier.width(6.dp))
+                            Text("Copy Log")
                         }
                     }
 
@@ -135,7 +176,7 @@ fun DiagnosticsScreen(
                                         fontWeight = FontWeight.SemiBold
                                     )
                                     Text(
-                                        text = "Tx:${cand.txHeader} Rx:${cand.rxHeader} | PID:${cand.modeAndPid}",
+                                        text = "Tx:${cand.txHeader} Rx:${cand.rxHeader} Init:${cand.initCommand} | PID:${cand.modeAndPid}",
                                         style = MaterialTheme.typography.labelSmall,
                                         fontFamily = FontFamily.Monospace,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -155,7 +196,7 @@ fun DiagnosticsScreen(
                                         Text(
                                             String.format(
                                                 Locale.ROOT,
-                                                "Use (%.1f°C)",
+                                                "Use (%.1f)",
                                                 cand.decodedTempC
                                             )
                                         )
@@ -190,14 +231,14 @@ fun DiagnosticsScreen(
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Column {
+                        Column(modifier = Modifier.weight(1f)) {
                             Text(
                                 text = "ELM327 / UDS Raw Terminal",
                                 style = MaterialTheme.typography.titleMedium,
                                 fontWeight = FontWeight.Bold
                             )
                             Text(
-                                text = "Send custom AT or UDS hex requests (e.g. ATRV, ATSH744, 10C0, 220003)",
+                                text = "Send custom AT or UDS hex requests (e.g. ATRV, ATSH745, ATCRA765, 1003, 222006)",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )

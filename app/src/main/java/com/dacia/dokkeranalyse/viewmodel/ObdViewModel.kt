@@ -64,6 +64,8 @@ class ObdViewModel(application: Application) : AndroidViewModel(application) {
     private var pollingJob: Job? = null
     private var logCounter = 0L
     private var demoTick = 0.0
+    private var evapFailoverIndex = 0
+    private var evapLocked = false
 
     init {
         _pids.value = repository.loadPids()
@@ -82,6 +84,7 @@ class ObdViewModel(application: Application) : AndroidViewModel(application) {
             _connectionState.value = ConnectionState.CONNECTING
             _connectedDeviceName.value = device.name
             _statusMessage.value = "Connecting to ${device.name} (${device.address})..."
+            evapLocked = false
 
             val result = btManager.connectAndInitialize(
                 address = device.address,
@@ -92,7 +95,7 @@ class ObdViewModel(application: Application) : AndroidViewModel(application) {
                 onSuccess = { adapterVer ->
                     repository.saveLastDeviceAddress(device.address)
                     _connectionState.value = ConnectionState.CONNECTED
-                    _statusMessage.value = "Connected ($adapterVer) — Polling live sensors"
+                    _statusMessage.value = "Connected ($adapterVer) — Dokker 8212/ABO (K9K 612)"
                     startPollingLoop()
                 },
                 onFailure = { err ->
@@ -109,9 +112,9 @@ class ObdViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             btManager.disconnect()
             _connectionState.value = ConnectionState.DEMO_MODE
-            _connectedDeviceName.value = "Simulated Dokker 1.5 dCi"
+            _connectedDeviceName.value = "Simulated Dokker 1.5 dCi (8212/ABO)"
             _statusMessage.value = "Demo Simulation Active — Simulating A/C evaporator cooling & icing cycle"
-            appendLog("DEMO", "Started Dacia Dokker 1.5 dCi A/C simulation", false)
+            appendLog("DEMO", "Started Dacia Dokker 1.5 dCi (8212/ABO) A/C simulation", false)
             startDemoLoop()
         }
     }
@@ -129,16 +132,29 @@ class ObdViewModel(application: Application) : AndroidViewModel(application) {
     private fun startPollingLoop() {
         pollingJob?.cancel()
         pollingJob = viewModelScope.launch {
+            val evapCandidates = DefaultPids.getEvaporatorProbeCandidates()
+                .filter { it.modeAndPid != "22222A" }
+
             while (isActive && _connectionState.value == ConnectionState.CONNECTED) {
                 if (_isProbing.value) {
                     delay(300L)
                     continue
                 }
 
-                // Group enabled PIDs by ECU header so we minimize ATSH / ATCRA switching per cycle
+                // Poll 7E0 (Engine ECU) and ATRV first so standard & K9K values update immediately,
+                // then poll 745 (UCH) so header switching happens at most once per cycle.
                 val enabledPids = _pids.value
                     .filter { it.enabled }
-                    .sortedWith(compareBy({ it.txHeader }, { it.rxHeader }))
+                    .sortedWith(
+                        compareBy<ObdPid> {
+                            when {
+                                it.modeAndPid == "ATRV" -> 0
+                                it.txHeader == "7E0" && it.initCommand.isEmpty() -> 1
+                                it.txHeader == "7E0" -> 2
+                                else -> 3
+                            }
+                        }.thenBy { it.txHeader }
+                    )
 
                 if (enabledPids.isEmpty()) {
                     delay(500L)
@@ -154,7 +170,13 @@ class ObdViewModel(application: Application) : AndroidViewModel(application) {
                             txHeader = pid.txHeader,
                             rxHeader = pid.rxHeader,
                             initCommand = pid.initCommand,
-                            modeAndPid = pid.modeAndPid
+                            modeAndPid = pid.modeAndPid,
+                            onLog = { c, r, isErr ->
+                                // Log all UDS (22xxxx) queries or errors so the user can inspect them in ECU Scanner
+                                if (pid.modeAndPid.startsWith("22") || isErr) {
+                                    appendLog("${pid.txHeader}>$c", r, isErr)
+                                }
+                            }
                         )
 
                         val bytes = FormulaEvaluator.extractPayloadBytes(rawResp, pid.modeAndPid)
@@ -169,8 +191,28 @@ class ObdViewModel(application: Application) : AndroidViewModel(application) {
                             value = evaluated,
                             rawHex = rawResp,
                             bytes = bytes ?: emptyList(),
-                            error = if (evaluated == null) rawResp.take(32) else null
+                            error = if (evaluated == null) rawResp.replace("\n", " ").take(28) else null
                         )
+
+                        // Auto-failover for Primary Evaporator PID if current DID did not respond
+                        if (pid.isPrimaryEvaporator) {
+                            if (evaluated != null && evaluated in -35.0..85.0) {
+                                evapLocked = true
+                            } else if (!evapLocked && evapCandidates.isNotEmpty()) {
+                                val nextCand = evapCandidates[evapFailoverIndex % evapCandidates.size]
+                                evapFailoverIndex++
+                                saveOrUpdatePid(
+                                    pid.copy(
+                                        name = "AC Evaporator (${nextCand.txHeader}/${nextCand.modeAndPid})",
+                                        txHeader = nextCand.txHeader,
+                                        rxHeader = nextCand.rxHeader,
+                                        initCommand = nextCand.initCommand,
+                                        modeAndPid = nextCand.modeAndPid,
+                                        formula = nextCand.formula
+                                    )
+                                )
+                            }
+                        }
                     } catch (e: Exception) {
                         updatePidReading(
                             pidId = pid.id,
@@ -179,14 +221,13 @@ class ObdViewModel(application: Application) : AndroidViewModel(application) {
                             bytes = emptyList(),
                             error = e.message ?: "Read error"
                         )
-                        // If socket broke, exit loop
                         if (e is java.io.IOException) {
                             _connectionState.value = ConnectionState.ERROR
                             _statusMessage.value = "Connection lost: ${e.message}"
                             break
                         }
                     }
-                    delay(60L)
+                    delay(50L)
                 }
             }
         }
@@ -199,20 +240,21 @@ class ObdViewModel(application: Application) : AndroidViewModel(application) {
                 demoTick += 0.18
                 val enabledPids = _pids.value.filter { it.enabled }
                 for (pid in enabledPids) {
-                    // Simulate realistic Dokker 1.5 dCi values
                     val simulatedVal: Double = when {
                         pid.isPrimaryEvaporator || pid.id.startsWith("evap_") -> {
-                            // Oscillate between +8.5°C (normal cooling) down to +0.4°C (icing threshold)
                             4.5 + 4.2 * sin(demoTick * 0.4)
                         }
                         pid.id == "ac_pressure_k9k" -> {
                             12.4 + 2.8 * sin(demoTick * 0.4)
                         }
+                        pid.id == "ac_request_k9k" || pid.id == "ac_permission_k9k" -> {
+                            1.0
+                        }
                         pid.id == "coolant_temp" -> {
                             84.0 + 1.5 * sin(demoTick * 0.1)
                         }
-                        pid.id == "ambient_temp" -> {
-                            26.0
+                        pid.id == "intake_temp" -> {
+                            29.0 + 1.0 * sin(demoTick * 0.2)
                         }
                         pid.id == "engine_rpm" -> {
                             850.0 + 15.0 * sin(demoTick)
@@ -220,7 +262,7 @@ class ObdViewModel(application: Application) : AndroidViewModel(application) {
                         pid.id == "battery_voltage" -> {
                             14.18 + 0.06 * sin(demoTick * 0.7)
                         }
-                        pid.id == "k9k_rail_pressure" -> {
+                        pid.id.contains("rail_pressure") -> {
                             285.0 + 12.0 * sin(demoTick * 0.8)
                         }
                         else -> {
@@ -230,16 +272,16 @@ class ObdViewModel(application: Application) : AndroidViewModel(application) {
 
                     val simulatedByteA = (simulatedVal + 40).toInt().coerceIn(0, 255)
                     val hexByte = String.format(Locale.ROOT, "%02X", simulatedByteA)
-                    val modePrefix = if (pid.modeAndPid.startsWith("22")) {
-                        "62" + pid.modeAndPid.drop(2)
-                    } else {
-                        "41" + pid.modeAndPid.drop(2)
+                    val modePrefix = when {
+                        pid.modeAndPid == "ATRV" -> "${String.format(Locale.ROOT, "%.2f", simulatedVal)}V"
+                        pid.modeAndPid.startsWith("22") -> "62" + pid.modeAndPid.drop(2) + hexByte
+                        else -> "41" + pid.modeAndPid.drop(2) + hexByte
                     }
 
                     updatePidReading(
                         pidId = pid.id,
                         value = simulatedVal,
-                        rawHex = "$modePrefix$hexByte",
+                        rawHex = modePrefix,
                         bytes = listOf(simulatedByteA),
                         error = null
                     )
@@ -306,6 +348,7 @@ class ObdViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun setPrimaryEvaporatorPid(pidId: String) {
+        evapLocked = true
         val updated = _pids.value.map {
             if (it.id == pidId) {
                 it.copy(isPrimaryEvaporator = true, enabled = true)
@@ -342,6 +385,7 @@ class ObdViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun resetPidsToDefault() {
+        evapLocked = false
         _pids.value = repository.resetToDefaults()
         _readings.value = emptyMap()
     }
@@ -357,9 +401,9 @@ class ObdViewModel(application: Application) : AndroidViewModel(application) {
 
             for (cand in candidates) {
                 if (_connectionState.value == ConnectionState.DEMO_MODE) {
-                    delay(250L)
-                    val isPrimarySim = cand.txHeader == "744" && cand.modeAndPid == "220003"
-                    val simRaw = if (isPrimarySim) "6200032D" else "NO DATA"
+                    delay(180L)
+                    val isPrimarySim = cand.txHeader == "745" && cand.modeAndPid == "222006"
+                    val simRaw = if (isPrimarySim) "6220062D" else "NO DATA"
                     val simTemp = if (isPrimarySim) 5.0 else null
                     updatedResults.add(
                         cand.copy(
@@ -389,7 +433,7 @@ class ObdViewModel(application: Application) : AndroidViewModel(application) {
                         rxHeader = cand.rxHeader,
                         initCommand = cand.initCommand,
                         modeAndPid = cand.modeAndPid,
-                        onLog = { c, r, err -> appendLog(c, r, err) }
+                        onLog = { c, r, err -> appendLog("${cand.txHeader}>$c", r, err) }
                     )
                 } catch (e: Exception) {
                     "ERROR: ${e.message}"
@@ -412,14 +456,105 @@ class ObdViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    /**
+     * Sweeps UCH (745/765) and K9K EDC17C42 (7E0/7E8) UDS 22xxxx blocks and appends any DID
+     * that returns a positive 62xxxx response so the user can see all live DIDs on their car.
+     */
+    fun runDeepDidScan() {
+        if (_isProbing.value) return
+        viewModelScope.launch {
+            _isProbing.value = true
+            val deepList = DefaultPids.getDeepScanList()
+            val discovered = mutableListOf<ProbeCandidateResult>()
+
+            appendLog("DEEP-SCAN", "Scanning ${deepList.size} UDS DIDs on UCH (745) & K9K (7E0)...", false)
+
+            for ((tx, rx, pid) in deepList) {
+                if (_connectionState.value == ConnectionState.DEMO_MODE) {
+                    delay(80L)
+                    if (pid == "222006" || pid == "22222A") {
+                        discovered.add(
+                            ProbeCandidateResult(
+                                label = "FOUND: ECU $tx/$rx DID $pid (Byte A-40)",
+                                txHeader = tx,
+                                rxHeader = rx,
+                                initCommand = "1003",
+                                modeAndPid = pid,
+                                formula = "A-40",
+                                rawResponse = "62${pid.drop(2)}2E",
+                                decodedTempC = 6.0,
+                                isSuccess = true
+                            )
+                        )
+                        _probeResults.value = discovered.toList()
+                    }
+                    continue
+                }
+
+                if (_connectionState.value != ConnectionState.CONNECTED) {
+                    appendLog("DEEP-SCAN", "Aborted: Not connected to OBD2 adapter", true)
+                    break
+                }
+
+                val raw = try {
+                    btManager.queryPid(
+                        txHeader = tx,
+                        rxHeader = rx,
+                        initCommand = "1003",
+                        modeAndPid = pid,
+                        onLog = { c, r, err -> appendLog("$tx>$c", r, err) }
+                    )
+                } catch (e: Exception) {
+                    "ERROR: ${e.message}"
+                }
+
+                val bytes = FormulaEvaluator.extractPayloadBytes(raw, pid)
+                if (bytes != null && bytes.isNotEmpty()) {
+                    val valA40 = FormulaEvaluator.evaluate("A-40", bytes)
+                    val val16Bit = if (bytes.size >= 2) {
+                        FormulaEvaluator.evaluate("((A*256)+B)*0.1-40", bytes)
+                    } else {
+                        null
+                    }
+                    discovered.add(
+                        ProbeCandidateResult(
+                            label = "HIT! ECU $tx/$rx DID $pid (Bytes: ${bytes.joinToString(",")})",
+                            txHeader = tx,
+                            rxHeader = rx,
+                            initCommand = "1003",
+                            modeAndPid = pid,
+                            formula = "A-40",
+                            rawResponse = buildString {
+                                append(raw.replace("\n", " "))
+                                if (valA40 != null) append(" | A-40=${valA40}°C")
+                                if (val16Bit != null) append(" | 16b=${String.format(Locale.ROOT, "%.1f", val16Bit)}°C")
+                            },
+                            decodedTempC = valA40,
+                            isSuccess = true
+                        )
+                    )
+                    _probeResults.value = discovered.toList()
+                }
+            }
+
+            if (discovered.isEmpty()) {
+                appendLog("DEEP-SCAN", "Completed. Check terminal log below for raw ECU responses.", false)
+            } else {
+                appendLog("DEEP-SCAN", "Found ${discovered.size} responding UDS DIDs!", false)
+            }
+            _isProbing.value = false
+        }
+    }
+
     fun applyProbeCandidateAsPrimary(candidate: ProbeCandidateResult) {
+        evapLocked = true
         val currentPrimary = _pids.value.firstOrNull { it.isPrimaryEvaporator }
             ?: _pids.value.firstOrNull()
 
         if (currentPrimary != null) {
             saveOrUpdatePid(
                 currentPrimary.copy(
-                    name = "AC Evaporator Temp (${candidate.txHeader})",
+                    name = "AC Evaporator (${candidate.txHeader}/${candidate.modeAndPid})",
                     txHeader = candidate.txHeader,
                     rxHeader = candidate.rxHeader,
                     initCommand = candidate.initCommand,
@@ -430,6 +565,23 @@ class ObdViewModel(application: Application) : AndroidViewModel(application) {
                 )
             )
         }
+    }
+
+    fun buildDiagnosticReportText(): String {
+        val sb = StringBuilder()
+        sb.appendLine("=== Dokker 8212/ABO (K9K 612) OBD2 Diagnostic Report ===")
+        sb.appendLine("Status: ${_statusMessage.value}")
+        sb.appendLine("--- Probe Results ---")
+        for (p in _probeResults.value) {
+            if (p.rawResponse.isNotBlank()) {
+                sb.appendLine("${p.txHeader}/${p.rxHeader} [${p.initCommand}] ${p.modeAndPid} -> ${p.rawResponse.replace("\n", " ")}")
+            }
+        }
+        sb.appendLine("--- Recent Terminal Logs ---")
+        for (l in _terminalLogs.value.takeLast(50)) {
+            sb.appendLine("[${l.timestamp}] ${l.command} -> ${l.response.replace("\n", " ")}")
+        }
+        return sb.toString()
     }
 
     fun sendManualCommand(cmd: String) {
@@ -466,7 +618,7 @@ class ObdViewModel(application: Application) : AndroidViewModel(application) {
             response = resp,
             isError = isError
         )
-        _terminalLogs.update { (it + entry).takeLast(120) }
+        _terminalLogs.update { (it + entry).takeLast(160) }
     }
 
     override fun onCleared() {

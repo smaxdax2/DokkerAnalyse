@@ -13,11 +13,26 @@ import java.util.Locale
 object FormulaEvaluator {
 
     /**
+     * Parses raw ELM327 voltage response from ATRV (e.g. "14.2V" or "12,4V").
+     */
+    fun parseAtRvVoltage(rawResponse: String): Double? {
+        val clean = rawResponse.replace(",", ".")
+        val match = Regex("([0-9]+\\.?[0-9]*)\\s*V", RegexOption.IGNORE_CASE).find(clean)
+            ?: Regex("\\b([0-9]{1,2}\\.[0-9]{1,2})\\b").find(clean)
+        return match?.groupValues?.getOrNull(1)?.toDoubleOrNull()
+    }
+
+    /**
      * Parses raw ELM327 hex response for a given requested modeAndPid (e.g. "220003" or "0105")
      * and extracts the payload bytes [A, B, C, D, ...].
      */
     fun extractPayloadBytes(rawResponse: String, modeAndPid: String): List<Int>? {
         val cleanPid = modeAndPid.replace(" ", "").uppercase(Locale.ROOT)
+        if (cleanPid == "ATRV") {
+            val v = parseAtRvVoltage(rawResponse) ?: return null
+            val mv = (v * 1000.0).toInt().coerceIn(0, 65535)
+            return listOf((mv shr 8) and 0xFF, mv and 0xFF)
+        }
         if (cleanPid.length < 2) return null
 
         val reqMode = cleanPid.substring(0, 2).toIntOrNull(16) ?: return null

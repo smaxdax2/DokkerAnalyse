@@ -154,6 +154,8 @@ class MainActivity : ComponentActivity() {
                                     isProbing = isProbing,
                                     terminalLogs = terminalLogs,
                                     onRunEvaporatorProbe = { viewModel.probeEvaporatorCandidates() },
+                                    onRunDeepDidScan = { viewModel.runDeepDidScan() },
+                                    onBuildReportText = { viewModel.buildDiagnosticReportText() },
                                     onUseProbeCandidate = { cand ->
                                         viewModel.applyProbeCandidateAsPrimary(cand)
                                         selectedTab = 0

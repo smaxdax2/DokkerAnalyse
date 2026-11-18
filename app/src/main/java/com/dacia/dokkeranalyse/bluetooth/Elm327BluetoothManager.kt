@@ -163,6 +163,14 @@ class Elm327BluetoothManager(context: Context) {
             val cleanInit = initCommand.trim().uppercase(Locale.ROOT)
             val cleanPid = modeAndPid.trim().replace(" ", "").uppercase(Locale.ROOT)
 
+            // Native ELM327 adapter command (e.g. ATRV for battery voltage) does not need CAN header changes
+            if (cleanPid.startsWith("AT")) {
+                val atResp = sendCommandRawInternal(cleanPid, 600L)
+                val isAtErr = atResp.contains("ERROR") || atResp.contains("?") || atResp.contains("TIMEOUT")
+                onLog?.invoke(cleanPid, atResp, isAtErr)
+                return@withContext atResp
+            }
+
             if (cleanTx != activeTxHeader || cleanRx != activeRxHeader) {
                 val headerCmds = listOf(
                     "ATSH$cleanTx",
@@ -172,7 +180,7 @@ class Elm327BluetoothManager(context: Context) {
                     "ATFCSM1"
                 )
                 for (hCmd in headerCmds) {
-                    val hResp = sendCommandRawInternal(hCmd, 400L)
+                    val hResp = sendCommandRawInternal(hCmd, 350L)
                     onLog?.invoke(hCmd, hResp, false)
                 }
                 activeTxHeader = cleanTx
@@ -181,8 +189,16 @@ class Elm327BluetoothManager(context: Context) {
             }
 
             if (cleanInit.isNotEmpty() && cleanInit != activeInitCommand) {
-                val initResp = sendCommandRawInternal(cleanInit, 700L)
-                onLog?.invoke(cleanInit, initResp, false)
+                val initResp = sendCommandRawInternal(cleanInit, 650L)
+                onLog?.invoke(cleanInit, initResp, initResp.startsWith("7F"))
+                // If UDS 1003 is rejected with 7F, automatically try KWP 10C0 (and vice versa)
+                if (initResp.replace(" ", "").startsWith("7F")) {
+                    val altInit = if (cleanInit == "1003") "10C0" else if (cleanInit == "10C0") "1003" else ""
+                    if (altInit.isNotEmpty()) {
+                        val altResp = sendCommandRawInternal(altInit, 650L)
+                        onLog?.invoke(altInit, altResp, altResp.startsWith("7F"))
+                    }
+                }
                 activeInitCommand = cleanInit
             }
 
