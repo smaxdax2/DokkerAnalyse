@@ -7,76 +7,25 @@ import com.dacia.dokkeranalyse.model.ProbeCandidateResult
 object DefaultPids {
 
     /**
-     * Tailored specifically for HSN 8212 / TSN ABO (ABO000766):
+     * Tailored specifically for HSN 8212 / TSN ABO (ABO000766) based on verified ECU log:
      * Dacia Dokker 1.5 dCi 75 PS (55 kW, K9K 612 Euro 5)
-     * - Engine ECU: Bosch EDC17C42 (CAN 7E0 / 7E8, UDS session 1003)
-     * - Body Control Module (UCH): Continental T4_VS_BCM (CAN 745 / 765, UDS session 1003)
-     * - Manual A/C (no separate 744 Climate ECU; evaporator thermistor routed via UCH 745 or ECM 7E0)
+     * - Engine ECU: 7E0 / 7E8 using session 10C0 (50C0 verified)
+     * - Verified A/C PIDs:
+     *   - 22222A: AC Refrigerant Pressure (PR037) -> ((A*256)+B)*0.1 bar (5.5-5.7 bar resting)
+     *   - 222229: AC Request & Evaporator Sensor Switch (ET018) -> {A:0} (1 = ON, 0 = OFF / Evap Cutoff)
+     *   - 222092: AC Compressor Permission (ET116) -> {A:0} (1 = Allowed, 0 = Inhibited by Engine ECU)
+     *   - 222091: AC / Fan Status Byte -> A
      */
     fun getDaciaDokker2014Defaults(): List<ObdPid> = listOf(
         ObdPid(
-            id = "evap_uch_745",
-            name = "AC Evaporator Temp (UCH 745)",
-            shortName = "Evap Temp",
-            description = "Dacia Dokker (8212/ABO) Manual A/C Evaporator Sensor via T4_VS_BCM (UCH 745/765, UDS 1003). Auto-switches if another DID responds.",
-            category = PidCategory.CLIMATE,
-            txHeader = "745",
-            rxHeader = "765",
-            initCommand = "1003",
-            modeAndPid = "222006",
-            formula = "A-40",
-            unit = "°C",
-            minValue = -20f,
-            maxValue = 60f,
-            decimals = 1,
-            enabled = true,
-            isPrimaryEvaporator = true
-        ),
-        ObdPid(
-            id = "evap_ecm_7e0",
-            name = "AC Evaporator Temp (K9K EDC17C42)",
-            shortName = "Evap (ECM)",
-            description = "Alternative Evaporator Temperature routed via 1.5 dCi K9K 612 Bosch EDC17C42 Engine ECU (7E0/7E8, UDS 1003).",
-            category = PidCategory.CLIMATE,
-            txHeader = "7E0",
-            rxHeader = "7E8",
-            initCommand = "1003",
-            modeAndPid = "22222B",
-            formula = "A-40",
-            unit = "°C",
-            minValue = -20f,
-            maxValue = 60f,
-            decimals = 1,
-            enabled = false,
-            isPrimaryEvaporator = false
-        ),
-        ObdPid(
-            id = "evap_clim_744",
-            name = "AC Evaporator Temp (Climate 744)",
-            shortName = "Evap (744)",
-            description = "Standalone HVAC ECU (744/764). Disabled by default because Dokker 8212/ABO has manual A/C without a 744 ECU.",
-            category = PidCategory.CLIMATE,
-            txHeader = "744",
-            rxHeader = "764",
-            initCommand = "1003",
-            modeAndPid = "220003",
-            formula = "A-40",
-            unit = "°C",
-            minValue = -20f,
-            maxValue = 60f,
-            decimals = 1,
-            enabled = false,
-            isPrimaryEvaporator = false
-        ),
-        ObdPid(
             id = "ac_pressure_k9k",
-            name = "AC Refrigerant Pressure (PR022)",
+            name = "A/C System & Evaporator Monitor",
             shortName = "AC Press",
-            description = "High-pressure A/C line sensor on K9K 612 Bosch EDC17C42 (UDS 22222A). Resting: ~4–6 bar, A/C active: 8–18 bar.",
+            description = "Live A/C High-Pressure sensor (22222A) combined with Evaporator Cutoff (AC Req 222229) & Engine ECU Permission (AC Perm 222092).",
             category = PidCategory.CLIMATE,
             txHeader = "7E0",
             rxHeader = "7E8",
-            initCommand = "1003",
+            initCommand = "10C0",
             modeAndPid = "22222A",
             formula = "((A*256)+B)*0.1",
             unit = "bar",
@@ -84,20 +33,20 @@ object DefaultPids {
             maxValue = 30f,
             decimals = 1,
             enabled = true,
-            isPrimaryEvaporator = false
+            isPrimaryEvaporator = true
         ),
         ObdPid(
             id = "ac_request_k9k",
-            name = "AC Switch Request (ET018)",
-            shortName = "AC Req",
-            description = "1 = A/C requested by cabin switch/UCH, 0 = OFF (K9K EDC17C42 DID 222229).",
+            name = "AC Request / Evap Switch (ET018)",
+            shortName = "AC Req (Evap)",
+            description = "1 = A/C switch ON & Evaporator Sensor OK. Drops to 0 if Evaporator Sensor (277230127R) trips or A/C is turned off (DID 222229).",
             category = PidCategory.CLIMATE,
             txHeader = "7E0",
             rxHeader = "7E8",
-            initCommand = "1003",
+            initCommand = "10C0",
             modeAndPid = "222229",
             formula = "{A:0}",
-            unit = "on/off",
+            unit = "state",
             minValue = 0f,
             maxValue = 1f,
             decimals = 0,
@@ -107,15 +56,15 @@ object DefaultPids {
         ObdPid(
             id = "ac_permission_k9k",
             name = "AC Compressor Permission (ET116)",
-            shortName = "AC Perm",
-            description = "1 = Engine ECU permits compressor clutch engagement, 0 = Cut off / Inhibited (DID 222092).",
+            shortName = "AC Perm (ECU)",
+            description = "1 = Engine ECU permits compressor clutch engagement, 0 = Cut off / Inhibited by Engine ECU (DID 222092).",
             category = PidCategory.CLIMATE,
             txHeader = "7E0",
             rxHeader = "7E8",
-            initCommand = "1003",
+            initCommand = "10C0",
             modeAndPid = "222092",
             formula = "{A:0}",
-            unit = "on/off",
+            unit = "state",
             minValue = 0f,
             maxValue = 1f,
             decimals = 0,
@@ -144,7 +93,7 @@ object DefaultPids {
             id = "intake_temp",
             name = "Intake Air Temperature",
             shortName = "Intake Air",
-            description = "Manifold intake air temperature (K9K 612 Mode 010F — supported on EDC17C42 unlike 0146).",
+            description = "Manifold intake air temperature (K9K 612 Mode 010F).",
             category = PidCategory.CLIMATE,
             txHeader = "7E0",
             rxHeader = "7E8",
@@ -180,7 +129,7 @@ object DefaultPids {
             id = "battery_voltage",
             name = "System Voltage (OBD2 ATRV)",
             shortName = "Voltage",
-            description = "12V battery and alternator charging voltage read directly via ELM327 ATRV (works on all K9K 612 ECUs).",
+            description = "12V battery and alternator charging voltage read directly via ELM327 ATRV.",
             category = PidCategory.ELECTRICAL,
             txHeader = "7E0",
             rxHeader = "7E8",
@@ -213,6 +162,24 @@ object DefaultPids {
             isPrimaryEvaporator = false
         ),
         ObdPid(
+            id = "ac_status_2091",
+            name = "A/C & Cooling Status Byte (222091)",
+            shortName = "AC Stat 2091",
+            description = "Raw A/C & fan status byte on K9K 612 (verified responding 62 20 91 0F on 8212/ABO).",
+            category = PidCategory.CLIMATE,
+            txHeader = "7E0",
+            rxHeader = "7E8",
+            initCommand = "10C0",
+            modeAndPid = "222091",
+            formula = "A",
+            unit = "raw",
+            minValue = 0f,
+            maxValue = 255f,
+            decimals = 0,
+            enabled = true,
+            isPrimaryEvaporator = false
+        ),
+        ObdPid(
             id = "k9k_boost_map",
             name = "Intake Manifold Pressure (MAP)",
             shortName = "MAP / Boost",
@@ -232,13 +199,13 @@ object DefaultPids {
         ),
         ObdPid(
             id = "k9k_dpf_soot",
-            name = "DPF Soot Mass (EDC17C42)",
+            name = "DPF Soot Mass (22242C)",
             shortName = "DPF Soot",
-            description = "Particulate filter soot load in grams on Bosch EDC17C42 (UDS 22242C).",
+            description = "Particulate filter soot load in grams (DID 22242C).",
             category = PidCategory.ENGINE,
             txHeader = "7E0",
             rxHeader = "7E8",
-            initCommand = "1003",
+            initCommand = "10C0",
             modeAndPid = "22242C",
             formula = "((A*256)+B)/100",
             unit = "g",
@@ -251,114 +218,14 @@ object DefaultPids {
     )
 
     /**
-     * Candidate UDS definitions for probing which ECU/DID hosts the Evaporator Temperature Sensor
-     * on the Dacia Dokker 1.5 dCi 75 PS (8212 / ABO000766 - T4_VS_BCM & Bosch EDC17C42).
+     * Verified A/C & Climate DIDs on Dacia Dokker 1.5 dCi 75 PS (8212 / ABO000766).
      */
     fun getEvaporatorProbeCandidates(): List<ProbeCandidateResult> = listOf(
         ProbeCandidateResult(
-            label = "UCH T4_VS_BCM (745/765) - Evap DID 222006 (UDS 1003)",
-            txHeader = "745",
-            rxHeader = "765",
-            initCommand = "1003",
-            modeAndPid = "222006",
-            formula = "A-40",
-            rawResponse = "",
-            decodedTempC = null,
-            isSuccess = false
-        ),
-        ProbeCandidateResult(
-            label = "UCH T4_VS_BCM (745/765) - Evap DID 220003 (UDS 1003)",
-            txHeader = "745",
-            rxHeader = "765",
-            initCommand = "1003",
-            modeAndPid = "220003",
-            formula = "A-40",
-            rawResponse = "",
-            decodedTempC = null,
-            isSuccess = false
-        ),
-        ProbeCandidateResult(
-            label = "UCH T4_VS_BCM (745/765) - Evap DID 222001 (16-bit 0.1°C)",
-            txHeader = "745",
-            rxHeader = "765",
-            initCommand = "1003",
-            modeAndPid = "222001",
-            formula = "((A*256)+B)*0.1-40",
-            rawResponse = "",
-            decodedTempC = null,
-            isSuccess = false
-        ),
-        ProbeCandidateResult(
-            label = "UCH T4_VS_BCM (745/765) - Evap DID 222002 (A-40)",
-            txHeader = "745",
-            rxHeader = "765",
-            initCommand = "1003",
-            modeAndPid = "222002",
-            formula = "A-40",
-            rawResponse = "",
-            decodedTempC = null,
-            isSuccess = false
-        ),
-        ProbeCandidateResult(
-            label = "UCH T4_VS_BCM (745/765) - Evap DID 22200E (A-40)",
-            txHeader = "745",
-            rxHeader = "765",
-            initCommand = "1003",
-            modeAndPid = "22200E",
-            formula = "A-40",
-            rawResponse = "",
-            decodedTempC = null,
-            isSuccess = false
-        ),
-        ProbeCandidateResult(
-            label = "UCH T4_VS_BCM (745/765) - Clim Block 228017 (A-40)",
-            txHeader = "745",
-            rxHeader = "765",
-            initCommand = "1003",
-            modeAndPid = "228017",
-            formula = "A-40",
-            rawResponse = "",
-            decodedTempC = null,
-            isSuccess = false
-        ),
-        ProbeCandidateResult(
-            label = "K9K EDC17C42 (7E0/7E8) - Evap DID 22222B (UDS 1003)",
+            label = "K9K (7E0/7E8) - AC Refrigerant Pressure (22222A / PR037)",
             txHeader = "7E0",
             rxHeader = "7E8",
-            initCommand = "1003",
-            modeAndPid = "22222B",
-            formula = "A-40",
-            rawResponse = "",
-            decodedTempC = null,
-            isSuccess = false
-        ),
-        ProbeCandidateResult(
-            label = "K9K EDC17C42 (7E0/7E8) - Evap DID 22222C (16-bit 0.1°C)",
-            txHeader = "7E0",
-            rxHeader = "7E8",
-            initCommand = "1003",
-            modeAndPid = "22222C",
-            formula = "((A*256)+B)*0.1-273.15",
-            rawResponse = "",
-            decodedTempC = null,
-            isSuccess = false
-        ),
-        ProbeCandidateResult(
-            label = "K9K EDC17C42 (7E0/7E8) - Evap DID 224007 (UDS 1003)",
-            txHeader = "7E0",
-            rxHeader = "7E8",
-            initCommand = "1003",
-            modeAndPid = "224007",
-            formula = "A-40",
-            rawResponse = "",
-            decodedTempC = null,
-            isSuccess = false
-        ),
-        ProbeCandidateResult(
-            label = "K9K EDC17C42 (7E0/7E8) - AC Pressure 22222A (Verify UDS)",
-            txHeader = "7E0",
-            rxHeader = "7E8",
-            initCommand = "1003",
+            initCommand = "10C0",
             modeAndPid = "22222A",
             formula = "((A*256)+B)*0.1",
             rawResponse = "",
@@ -366,12 +233,56 @@ object DefaultPids {
             isSuccess = false
         ),
         ProbeCandidateResult(
-            label = "Climate / HVAC ECU (744/764) - PR003 (220003 / 1003)",
-            txHeader = "744",
-            rxHeader = "764",
+            label = "K9K (7E0/7E8) - AC Request / Evap Switch (222229 / ET018)",
+            txHeader = "7E0",
+            rxHeader = "7E8",
+            initCommand = "10C0",
+            modeAndPid = "222229",
+            formula = "{A:0}",
+            rawResponse = "",
+            decodedTempC = null,
+            isSuccess = false
+        ),
+        ProbeCandidateResult(
+            label = "K9K (7E0/7E8) - AC Compressor Permission (222092 / ET116)",
+            txHeader = "7E0",
+            rxHeader = "7E8",
+            initCommand = "10C0",
+            modeAndPid = "222092",
+            formula = "{A:0}",
+            rawResponse = "",
+            decodedTempC = null,
+            isSuccess = false
+        ),
+        ProbeCandidateResult(
+            label = "K9K (7E0/7E8) - AC Status Mask (222091)",
+            txHeader = "7E0",
+            rxHeader = "7E8",
+            initCommand = "10C0",
+            modeAndPid = "222091",
+            formula = "A",
+            rawResponse = "",
+            decodedTempC = null,
+            isSuccess = false
+        ),
+        ProbeCandidateResult(
+            label = "UCH T4_VS_BCM (745/765) - Block 228015 (UDS 1003)",
+            txHeader = "745",
+            rxHeader = "765",
             initCommand = "1003",
-            modeAndPid = "220003",
-            formula = "A-40",
+            modeAndPid = "228015",
+            formula = "A",
+            rawResponse = "",
+            decodedTempC = null,
+            isSuccess = false
+        ),
+        ProbeCandidateResult(
+            label = "UCH T4_VS_BCM (745/765) - Block 228018 (UDS 1003)",
+            txHeader = "745",
+            rxHeader = "765",
+            initCommand = "1003",
+            modeAndPid = "228018",
+            formula = "A",
             rawResponse = "",
             decodedTempC = null,
             isSuccess = false
@@ -379,41 +290,9 @@ object DefaultPids {
     )
 
     /**
-     * Deep UDS DID sweep list for UCH (745/765) and K9K EDC17C42 (7E0/7E8) to discover all
-     * responding climate/temperature/A/C DIDs on this exact vehicle software version.
+     * Deep UDS DID sweep list for K9K (7E0/7E8) and UCH (745/765).
      */
     fun getDeepScanList(): List<Triple<String, String, String>> = listOf(
-        // UCH / T4_VS_BCM (745/765) common Renault/Dacia climate & sensor DIDs
-        Triple("745", "765", "220001"),
-        Triple("745", "765", "220002"),
-        Triple("745", "765", "220003"),
-        Triple("745", "765", "220004"),
-        Triple("745", "765", "220005"),
-        Triple("745", "765", "220006"),
-        Triple("745", "765", "220101"),
-        Triple("745", "765", "220102"),
-        Triple("745", "765", "220201"),
-        Triple("745", "765", "222001"),
-        Triple("745", "765", "222002"),
-        Triple("745", "765", "222003"),
-        Triple("745", "765", "222004"),
-        Triple("745", "765", "222005"),
-        Triple("745", "765", "222006"),
-        Triple("745", "765", "222007"),
-        Triple("745", "765", "222008"),
-        Triple("745", "765", "222009"),
-        Triple("745", "765", "22200A"),
-        Triple("745", "765", "22200B"),
-        Triple("745", "765", "22200C"),
-        Triple("745", "765", "22200D"),
-        Triple("745", "765", "22200E"),
-        Triple("745", "765", "22200F"),
-        Triple("745", "765", "228010"),
-        Triple("745", "765", "228015"),
-        Triple("745", "765", "228016"),
-        Triple("745", "765", "228017"),
-        Triple("745", "765", "228018"),
-        // K9K 612 Bosch EDC17C42 (7E0/7E8) climate & temperature DIDs
         Triple("7E0", "7E8", "222091"),
         Triple("7E0", "7E8", "222092"),
         Triple("7E0", "7E8", "222228"),
@@ -423,8 +302,10 @@ object DefaultPids {
         Triple("7E0", "7E8", "22222C"),
         Triple("7E0", "7E8", "22222D"),
         Triple("7E0", "7E8", "22222E"),
-        Triple("7E0", "7E8", "222230"),
-        Triple("7E0", "7E8", "224006"),
-        Triple("7E0", "7E8", "224007")
+        Triple("745", "765", "228010"),
+        Triple("745", "765", "228015"),
+        Triple("745", "765", "228016"),
+        Triple("745", "765", "228017"),
+        Triple("745", "765", "228018")
     )
 }

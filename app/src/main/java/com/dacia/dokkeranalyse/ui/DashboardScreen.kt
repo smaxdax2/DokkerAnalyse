@@ -113,12 +113,15 @@ fun DashboardScreen(
             )
         }
 
-        // 2. Hero Card: AC Evaporator Temperature Sensor
+        // 2. Hero Card: AC System & Evaporator Monitor
         if (primaryEvapPid != null) {
             item {
                 EvaporatorHeroCard(
                     pid = primaryEvapPid,
                     reading = readings[primaryEvapPid.id],
+                    acReqReading = readings["ac_request_k9k"],
+                    acPermReading = readings["ac_permission_k9k"],
+                    rpmReading = readings["engine_rpm"],
                     onResetStats = onResetStats
                 )
             }
@@ -277,42 +280,89 @@ private fun ConnectionStatusCard(
 private fun EvaporatorHeroCard(
     pid: ObdPid,
     reading: PidReading?,
+    acReqReading: PidReading?,
+    acPermReading: PidReading?,
+    rpmReading: PidReading?,
     onResetStats: () -> Unit
 ) {
-    val tempVal = reading?.value
-    val formattedValue = if (tempVal != null) {
-        String.format(Locale.ROOT, "%.${pid.decimals}f", tempVal)
+    val mainVal = reading?.value
+    val formattedValue = if (mainVal != null) {
+        String.format(Locale.ROOT, "%.${pid.decimals}f", mainVal)
     } else {
         "--.-"
     }
 
-    // Climate diagnostic evaluation for Dacia Dokker evaporator sensor
-    val (statusLabel, statusColor, diagnosticHint) = when {
-        tempVal == null -> Triple(
-            "WAITING FOR ECU DATA",
-            Color.Gray,
-            "Connect to ELM327 adapter and turn ignition ON (ECU ${pid.txHeader} -> PID ${pid.modeAndPid})."
-        )
-        tempVal < -25.0 || tempVal > 75.0 -> Triple(
-            "SENSOR FAULT / OPEN CIRCUIT",
-            DokkerRed,
-            "Extreme value (${formattedValue}°C) points to a defective NTC thermistor or broken wire."
-        )
-        tempVal <= 1.5 -> Triple(
-            "ICING / FREEZING RISK!",
-            DokkerRed,
-            "Evaporator core is near or below 0°C! Risk of ice blocking airflow or cutting off compressor."
-        )
-        tempVal in 1.5..10.5 -> Triple(
-            "OPTIMAL A/C COOLING",
-            DokkerGreen,
-            "Normal evaporator temperature range (2°C – 10°C) while A/C compressor is active."
-        )
-        else -> Triple(
-            "WARM / A/C COMPRESSOR OFF",
-            DokkerAmber,
-            "Evaporator is above 11°C. A/C is off, clutch disengaged, or refrigerant pressure is low."
-        )
+    val isPressureMode = pid.unit.equals("bar", ignoreCase = true) || pid.modeAndPid == "22222A"
+    val acReq = acReqReading?.value?.toInt()
+    val acPerm = acPermReading?.value?.toInt()
+    val rpm = rpmReading?.value ?: 0.0
+
+    val (statusLabel, statusColor, diagnosticHint) = if (isPressureMode) {
+        when {
+            mainVal == null -> Triple(
+                "WAITING FOR K9K ECU DATA",
+                Color.Gray,
+                "Connect to ELM327 adapter and turn ignition ON (ECU 7E0 -> 22222A / 222229 / 222092)."
+            )
+            acReq == 1 && acPerm == 0 && rpm < 400.0 -> Triple(
+                "A/C SWITCH & EVAP SENSOR OK (ENGINE OFF)",
+                DokkerBlue,
+                "AC Req = 1 (Evaporator sensor OK) • Static pressure ${formattedValue} bar. Start engine to engage compressor (AC Perm = 1)."
+            )
+            (acReq == 1 && mainVal > 23.5) || (acPerm == 0 && mainVal > 22.0) -> Triple(
+                "HIGH-PRESSURE CUT-OFF (${formattedValue} BAR)!",
+                DokkerRed,
+                "Pressure exceeded safety limit! Check radiator fan low-speed resistor (Vorwiderstand) or R134a overfill (spec: 475g)."
+            )
+            acReq == 1 && acPerm == 0 && rpm >= 400.0 -> Triple(
+                "ENGINE ECU BLOCKING COMPRESSOR (AC PERM = 0)",
+                DokkerRed,
+                "Cabin & Evaporator sensor request cooling (AC Req = 1), but Engine ECU denied compressor permission (AC Perm = 0)."
+            )
+            acReq == 1 && acPerm == 1 && rpm >= 400.0 && mainVal < 6.8 -> Triple(
+                "CLUTCH / RELAY NOT ENGAGING (${formattedValue} BAR)",
+                DokkerAmber,
+                "Both AC Req = 1 & AC Perm = 1 are ON, but pressure stays at resting level (${formattedValue} bar). Check compressor magnetic clutch or A/C relay!"
+            )
+            acReq == 1 && acPerm == 1 && mainVal in 6.8..23.5 -> Triple(
+                "A/C COOLING ACTIVE & NORMAL",
+                DokkerGreen,
+                "Evaporator sensor OK (AC Req = 1) • Compressor permitted (AC Perm = 1) • Normal operating pressure (${formattedValue} bar)."
+            )
+            else -> Triple(
+                "A/C OFF OR EVAPORATOR CUT-OFF (AC REQ = 0)",
+                DokkerAmber,
+                "AC Req = 0. If your console A/C button & cabin fan ARE switched ON right now, the Evaporator Sensor (277230127R) has tripped and cut off cooling!"
+            )
+        }
+    } else {
+        when {
+            mainVal == null -> Triple(
+                "WAITING FOR ECU DATA",
+                Color.Gray,
+                "Connect to ELM327 adapter and turn ignition ON (ECU ${pid.txHeader} -> PID ${pid.modeAndPid})."
+            )
+            mainVal < -25.0 || mainVal > 75.0 -> Triple(
+                "SENSOR FAULT / OPEN CIRCUIT",
+                DokkerRed,
+                "Extreme value (${formattedValue}°C) points to a defective NTC thermistor or broken wire."
+            )
+            mainVal <= 1.5 -> Triple(
+                "ICING / FREEZING RISK!",
+                DokkerRed,
+                "Evaporator core is near or below 0°C! Risk of ice blocking airflow or cutting off compressor."
+            )
+            mainVal in 1.5..10.5 -> Triple(
+                "OPTIMAL A/C COOLING",
+                DokkerGreen,
+                "Normal evaporator temperature range (2°C – 10°C) while A/C compressor is active."
+            )
+            else -> Triple(
+                "WARM / A/C COMPRESSOR OFF",
+                DokkerAmber,
+                "Evaporator is above 11°C. A/C is off, clutch disengaged, or refrigerant pressure is low."
+            )
+        }
     }
 
     Card(
@@ -358,7 +408,7 @@ private fun EvaporatorHeroCard(
 
             Spacer(modifier = Modifier.height(12.dp))
 
-            // Big Temperature Readout + Min/Max Column
+            // Big Readout + Min/Max Column
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.Bottom,
@@ -369,7 +419,7 @@ private fun EvaporatorHeroCard(
                         text = formattedValue,
                         fontSize = 54.sp,
                         fontWeight = FontWeight.ExtraBold,
-                        color = if (tempVal != null) statusColor else MaterialTheme.colorScheme.onSurface
+                        color = if (mainVal != null) statusColor else MaterialTheme.colorScheme.onSurface
                     )
                     Spacer(modifier = Modifier.width(6.dp))
                     Text(
@@ -406,6 +456,45 @@ private fun EvaporatorHeroCard(
                             style = MaterialTheme.typography.labelSmall,
                             fontFamily = FontFamily.Monospace,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            }
+
+            if (isPressureMode) {
+                Spacer(modifier = Modifier.height(10.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    val reqColor = if (acReq == 1) DokkerGreen else DokkerAmber
+                    val permColor = if (acPerm == 1) DokkerGreen else DokkerRed
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(reqColor.copy(alpha = 0.18f))
+                            .padding(horizontal = 10.dp, vertical = 6.dp)
+                    ) {
+                        Text(
+                            text = "Evap / AC Req: ${if (acReq == 1) "ON (1)" else if (acReq == 0) "OFF (0)" else "--"}",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = reqColor,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(permColor.copy(alpha = 0.18f))
+                            .padding(horizontal = 10.dp, vertical = 6.dp)
+                    ) {
+                        Text(
+                            text = "ECU AC Perm: ${if (acPerm == 1) "ALLOWED (1)" else if (acPerm == 0) "BLOCKED (0)" else "--"}",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = permColor,
+                            fontWeight = FontWeight.Bold
                         )
                     }
                 }

@@ -193,26 +193,6 @@ class ObdViewModel(application: Application) : AndroidViewModel(application) {
                             bytes = bytes ?: emptyList(),
                             error = if (evaluated == null) rawResp.replace("\n", " ").take(28) else null
                         )
-
-                        // Auto-failover for Primary Evaporator PID if current DID did not respond
-                        if (pid.isPrimaryEvaporator) {
-                            if (evaluated != null && evaluated in -35.0..85.0) {
-                                evapLocked = true
-                            } else if (!evapLocked && evapCandidates.isNotEmpty()) {
-                                val nextCand = evapCandidates[evapFailoverIndex % evapCandidates.size]
-                                evapFailoverIndex++
-                                saveOrUpdatePid(
-                                    pid.copy(
-                                        name = "AC Evaporator (${nextCand.txHeader}/${nextCand.modeAndPid})",
-                                        txHeader = nextCand.txHeader,
-                                        rxHeader = nextCand.rxHeader,
-                                        initCommand = nextCand.initCommand,
-                                        modeAndPid = nextCand.modeAndPid,
-                                        formula = nextCand.formula
-                                    )
-                                )
-                            }
-                        }
                     } catch (e: Exception) {
                         updatePidReading(
                             pidId = pid.id,

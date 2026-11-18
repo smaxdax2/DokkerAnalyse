@@ -93,7 +93,7 @@ class PidRepository(context: Context) {
     }
 
     companion object {
-        private const val KEY_PID_LIST = "pid_list_v2_8212_abo"
+        private const val KEY_PID_LIST = "pid_list_v3_8212_abo_verified"
         private const val KEY_LAST_BT_ADDRESS = "last_bt_address"
     }
 }
